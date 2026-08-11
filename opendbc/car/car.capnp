@@ -647,6 +647,7 @@ struct CarParams {
     fcaGiorgio @32;
     rivian @33;
     volkswagenMeb @34;
+    geely @35;  # xiaomi8: 吉利 (Geely Binyue)
   }
 
   enum SteerControlType {

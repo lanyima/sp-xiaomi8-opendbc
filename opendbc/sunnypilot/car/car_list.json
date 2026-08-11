@@ -4495,5 +4495,13 @@
       "2023"
     ],
     "package": "Adaptive Cruise Control (ACC) & Lane Assist"
+  },
+  "Geely Binyue (缤越)": {
+    "platform": "GEELY_BINYUE",
+    "make": "Geely",
+    "brand": "geely",
+    "model": "Binyue (缤越)",
+    "year": [],
+    "package": "All"
   }
 }
