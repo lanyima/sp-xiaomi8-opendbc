@@ -41,14 +41,17 @@ static const LongitudinalLimits GEELY_LONG_LIMITS = {
 };
 
 // ========== RxCheck ==========
+// There is no Geely quality-bit decoder. Requiring a quality bit while the
+// hook is NULL makes every RX frame invalid in safety.h. CRC and counter
+// validation on 0x1A1 remain enabled.
 
 #define GEELY_RX_CHECKS \
-  {.msg = {{0x0E0, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false, .frequency = 100U}, { 0 }, { 0 }}},  /* STEERING_MODULE */ \
-  {.msg = {{0x150, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false, .frequency = 50U}, { 0 }, { 0 }}},  /* STEERING_TORQUE */ \
-  {.msg = {{0x84,  0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false, .frequency = 50U}, { 0 }, { 0 }}},  /* GAS_PEDAL */ \
-  {.msg = {{0x122, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false, .frequency = 50U}, { 0 }, { 0 }}},  /* WHEEL_SPEED */ \
-  {.msg = {{0x125, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false, .frequency = 50U}, { 0 }, { 0 }}},  /* PARKING_BRAKE */ \
-  {.msg = {{0x1A1, 2, 8, .ignore_checksum = false, .ignore_counter = false, .max_counter = 15U, .ignore_quality_flag = false, .frequency = 50U}, { 0 }, { 0 }}},  /* ACC_CMD Bus 2 (启用校验和和计数器检查) */ \
+  {.msg = {{0x0E0, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .frequency = 100U}, { 0 }, { 0 }}},  /* STEERING_MODULE */ \
+  {.msg = {{0x150, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .frequency = 50U}, { 0 }, { 0 }}},  /* STEERING_TORQUE */ \
+  {.msg = {{0x84,  0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .frequency = 50U}, { 0 }, { 0 }}},  /* GAS_PEDAL */ \
+  {.msg = {{0x122, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .frequency = 50U}, { 0 }, { 0 }}},  /* WHEEL_SPEED */ \
+  {.msg = {{0x125, 0, 8, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .frequency = 50U}, { 0 }, { 0 }}},  /* PARKING_BRAKE */ \
+  {.msg = {{0x1A1, 2, 8, .ignore_checksum = false, .ignore_counter = false, .max_counter = 15U, .ignore_quality_flag = true, .frequency = 50U}, { 0 }, { 0 }}},  /* ACC_CMD Bus 2 (CRC/counter validation enabled) */ \
 
 // ========== 钩子函数 ==========
 

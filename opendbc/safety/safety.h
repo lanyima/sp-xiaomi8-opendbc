@@ -420,13 +420,13 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
     {SAFETY_RIVIAN, &rivian_hooks},
     {SAFETY_TESLA, &tesla_hooks},
     {SAFETY_HYUNDAI_CANFD, &hyundai_canfd_hooks},
+    {SAFETY_GEELY, &geely_hooks},  // xiaomi8 2026-08-19: 移出ALLOW_DEBUG(原在此块内→量产固件不含geely→panda拒mode35), 量产必须含
 #ifdef ALLOW_DEBUG
     {SAFETY_CHRYSLER_CUSW, &chrysler_cusw_hooks},
     {SAFETY_PSA, &psa_hooks},
     {SAFETY_SUBARU_PREGLOBAL, &subaru_preglobal_hooks},
     {SAFETY_VOLKSWAGEN_MLB, &volkswagen_mlb_hooks},
     {SAFETY_VOLKSWAGEN_PQ, &volkswagen_pq_hooks},
-    {SAFETY_GEELY, &geely_hooks},  // xiaomi8: 吉利
     {SAFETY_ALLOUTPUT, &alloutput_hooks},
 #endif
   };

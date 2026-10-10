@@ -34,7 +34,10 @@ class CarInterface(CarInterfaceBase):
 
     # 转向配置
     ret.steerControlType = structs.CarParams.SteerControlType.torque
-    ret.steerActuatorDelay = 0.1   # 转向延迟 (降低延迟提高响应速度，参考Honda)
+    # 转向延迟: 原为0.1s("参考Honda", 从未针对本车实测). 2026-08-29用真实行车数据实测
+    # (OP下发角度命令 vs 实际测得方向盘角, 14段独立控车片段互相关, r=0.86~0.98):
+    # 中位数200ms, 均值226ms, 范围140~420ms, 全部大于原假设值. 改为实测中位数.
+    ret.steerActuatorDelay = 0.2   # 转向延迟 (2026-08-29实测, 原0.1参考Honda未经验证)
     ret.steerLimitTimer = 0.1      # 限制计时器
 
     # 横向调优
@@ -73,13 +76,18 @@ class CarInterface(CarInterfaceBase):
       ret.lateralTuning.pid.kpV = [0.06, 0.18, 0.18, 0.19]  # 使用Proton的P增益
       ret.lateralTuning.pid.kiBP = [0., 20., 30.]
       ret.lateralTuning.pid.kiV = [0.04, 0.08, 0.16]  # 使用Proton的I增益
-      ret.lateralTuning.pid.kf = 0.0000015  # 使用Proton的前馈增益
+      # SP2025 validated this value on the Mi 8/V4L2 path. The later 1.5e-6
+      # Proton value overdrives both left and right curves while straight-line
+      # behavior remains normal, so keep the validated Geely feedforward.
+      ret.lateralTuning.pid.kf = 0.0000008
 
-      # 纵向调优（对齐Proton参考设置）
+      # 吉利 ACC 自身已有执行器闭环；不能直接套用 Proton 的高增益。
+      # 高增益会把 aEgo 的微小测量/执行器波动放大为油门-刹车循环，
+      # 尤其在有前车时表现为反复拉锯。此表来自已验证的 Geely 标定分支。
       ret.longitudinalTuning.kpBP = [0., 5., 20.]
-      ret.longitudinalTuning.kpV = [5.0, 3.6, 3.6]  # 与Proton保持一致
+      ret.longitudinalTuning.kpV = [1.2, 0.8, 0.6]
       ret.longitudinalTuning.kiBP = [0., 5., 20.]
-      ret.longitudinalTuning.kiV = [1.5, 1.0, 1.0]  # 与Proton保持一致
+      ret.longitudinalTuning.kiV = [0.18, 0.12, 0.08]
       ret.longitudinalActuatorDelay = 0.5
 
       # 车辆动力学 - wheelbase/centerToFront/minEnableSpeed 等由 CarSpecs 自动设置
@@ -90,9 +98,12 @@ class CarInterface(CarInterfaceBase):
 
       # 低速和停车参数（关键：避免MPC在低速时失败）
       ret.stopAccel = -2.0          # 停车时的加速度 (m/s²)
-      ret.vEgoStopping = 0.5        # 认为车辆正在停止的速度阈值 (m/s)
-      ret.vEgoStarting = 0.5        # 认为车辆正在启动的速度阈值 (m/s)
-      ret.stoppingDecelRate = 0.8   # 停车减速率 (m/s²/s)
+      # xiaomi8 fix: schema 无此字段, 注释掉
+      # ret.vEgoStopping = ...
+      # xiaomi8 fix: schema 无此字段, 注释掉
+      # ret.vEgoStarting = ...
+      # xiaomi8 fix: schema 无此字段, 注释掉
+      # ret.stoppingDecelRate = ...
 
       # 停止-继续自动恢复 - 仅在OP纵向控制启用时
       ret.autoResumeSng = ret.openpilotLongitudinalControl

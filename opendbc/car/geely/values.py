@@ -24,23 +24,18 @@ class CarControllerParams:
   STEER_DELTA_UP = 20      # Maximum increase per frame (@50Hz) / 每帧最大增加量
   STEER_DELTA_DOWN = 30    # Maximum decrease per frame (@50Hz) / 每帧最大减少量
 
-  # Driver torque compensation factor (reference: Proton implementation)
-  # 驾驶员扭矩补偿系数（参考Proton实现）
-  # Total factor = STEER_DRIVER_FACTOR × STEER_DRIVER_MULTIPLIER = 15 × 15 = 30
-  # Must match GEELY_DRIVER_TORQUE_FACTOR in safety/modes/geely.h
-  # 总系数 = STEER_DRIVER_FACTOR × STEER_DRIVER_MULTIPLIER = 2 × 15 = 30
-  # 必须与 safety/modes/geely.h 中的 GEELY_DRIVER_TORQUE_FACTOR 保持一致
-  STEER_DRIVER_ALLOWANCE = 0
-  STEER_DRIVER_MULTIPLIER = 15   # Standard multiplier / 标准乘数
-  STEER_DRIVER_FACTOR = 2        # Reduced from 15 to 2 (total: 2×15=30 vs original 15×15=225) / 从15降至2（总值：2×15=30 vs 原15×15=225）
+  # Driver torque compensation must exactly match Panda's geely safety mode.
+  # MAIN_TORQUE includes EPS load, not solely hand torque.  The former
+  # allowance=0 / multiplier=15 / factor=2 made a harmless +59 reading clamp
+  # a requested -598 command to zero, despite Panda allowing it.  Preserve a
+  # real hand-override margin without treating EPS assistance as a driver.
+  STEER_DRIVER_ALLOWANCE = 124
+  STEER_DRIVER_MULTIPLIER = 1
+  STEER_DRIVER_FACTOR = 1
 
   # Longitudinal control limits / 纵向控制限制
   ACCEL_MAX = 1.5      # Maximum acceleration (m/s²) / 最大加速度
   ACCEL_MIN = -3.5     # Maximum deceleration (m/s²) / 最大减速度
-
-  # Parking-related parameters / 停车相关参数
-  NEAR_STOP_BRAKE_PHASE = 0.5
-  ACC_HUD_STEP = 50
 
   def __init__(self, CP):
     # Read actual torque limits from lateralParams
@@ -62,18 +57,6 @@ class GeelyFlags(IntFlag):
   STOCK_ACC = 1 << 1            # Use stock ACC / 使用原车ACC
   ALC_ENABLED = 1 << 2          # Enable Automatic Lane Change / 启用自动变道
   MADS_ENABLED = 1 << 3         # MADS mode enabled / MADS模式启用
-  HAS_GAS_INTERCEPTOR = 1 << 4  # Gas interceptor installed / 安装油门拦截器
-
-
-class GeelySafetyFlags(IntFlag):
-  """Geely safety mode flags / 吉利安全模式标志位"""
-  STOCK_LONGITUDINAL = 1 << 0   # Use stock longitudinal control / 使用原车纵向控制
-
-
-class CanBus:
-  """Geely vehicle CAN bus definitions / 吉利车辆CAN总线定义"""
-  PT = 0    # Powertrain bus (vehicle messages) / 动力总线（车辆消息）
-  CAM = 2   # Camera bus (ADAS messages) / 摄像头总线（ADAS消息）
 
 
 def dbc_dict(pt: str, radar: str | None = None, cam: str | None = None) -> dict:
@@ -111,6 +94,10 @@ class CAR(Platforms):
     CarSpecs(
       mass=1370.0,
       wheelbase=2.6,
+      # Fixed geometric baseline. Do not promote a persisted paramsd estimate
+      # into this value: the learner is allowed to adapt from this starting
+      # point per vehicle, while a stale cross-route estimate causes curve
+      # oversteer and an activation kick.
       steerRatio=15.0,
       centerToFrontRatio=0.44,
       tireStiffnessFactor=0.9871

@@ -1,45 +1,26 @@
 """吉利车辆控制器。"""
-import numpy as np
 from opendbc.can.packer import CANPacker
 from opendbc.car import Bus, DT_CTRL, rate_limit, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits  # xiaomi8: upstream moved this to lateral.py
 from opendbc.car.interfaces import CarControllerBase
-from opendbc.car.geely.geelycan import (create_can_steer_command, create_acc_command,
-                                         create_gas_command, create_torque_command)
+from opendbc.car.geely.geelycan import create_can_steer_command, create_acc_command
 from opendbc.car.geely.values import CarControllerParams
-
-VisualAlert = structs.CarControl.HUDControl.VisualAlert
-LongCtrlState = structs.CarControl.Actuators.LongControlState
+from opendbc.sunnypilot.car.geely.mads import MadsCarController
 
 
 class CarControllerConstants:
   """控制器常量定义。"""
-  # 驾驶员干预检测
-  DRIVER_BRAKE_THRESHOLD = 0.01  # 刹车踏板阈值
-  DRIVER_GAS_THRESHOLD = 0.05    # 油门踏板阈值 (提高阈值减少误触发)
-
-  # 纵向控制参数
-  GAS_BRAKE_HYST_ON = 0.01      # 激活刹车/油门的滞后阈值 (降低阈值，让轻微刹车也能生效)
-  GAS_BRAKE_HYST_OFF = 0.005    # 停用刹车/油门的滞后阈值
-  GAS_BRAKE_HYST_GAP = 0.01     # 刹车命令变化的最小间隙
-
   # 加速度速率限制 (参考Toyota, 放宽6倍避免顿挫)
   ACCEL_WINDUP_LIMIT = 4.0 * DT_CTRL * 3    # 加速时限制: 0.24 m/s² per frame
   ACCEL_WINDDOWN_LIMIT = -4.0 * DT_CTRL * 3  # 减速时限制: -0.24 m/s² per frame
 
-  # 气动刹车补偿参数
-  WIND_BRAKE_SPEEDS = [0.0, 2.3, 35.0]  # 速度断点(km/h)
-  WIND_BRAKE_VALUES = [0.001, 0.002, 0.15]  # 气动刹车值
 
-  # Driver torque threshold (reference: Toyota/Honda approach) / 驾驶员扭矩阈值（参考Toyota/Honda做法）
-  MAX_DRIVER_TORQUE_ALLOWANCE = 200  # Driver torque limit (above this: disable control) / 驾驶员扭矩限制（超过此值：禁用控制）
-
-
-class CarController(CarControllerBase):
+class CarController(CarControllerBase, MadsCarController):
   """吉利车辆控制器，支持转向和纵向控制。"""
 
   def __init__(self, dbc_names, CP, CP_SP=None):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
+    MadsCarController.__init__(self)
     self.params = CarControllerParams(CP)
     self.packer = CANPacker(dbc_names[Bus.pt])
 
@@ -57,87 +38,11 @@ class CarController(CarControllerBase):
     self.STEER_TIME_STUCK_TORQUE = 10.0  # 秒，30秒警告前触发3次
 
     # 纵向控制状态
-    self.braking = False
-    self.brake_steady = 0.0
-    self.gas_steady = 0.0
     self.last_accel = 0.0
 
     # 原厂转向恢复状态
     self.last_steer_disable_time = 0.0
     self.prev_steer_enabled = False
-
-  def _compute_gas_brake(self, accel, speed):
-    """计算油门和刹车值，包含气动刹车补偿。
-
-    参数:
-      accel: 期望加速度 (m/s²)
-      speed: 当前速度 (m/s)
-
-    返回:
-      tuple: (gas_value, brake_value) - 油门和刹车值 (0.0-1.0)
-    """
-    # 气动刹车补偿 - 高速度时空气阻力产生的减速度
-    wind_brake = np.interp(speed, CarControllerConstants.WIND_BRAKE_SPEEDS,
-                          CarControllerConstants.WIND_BRAKE_VALUES)
-
-    # 计算净加速度（减去气动刹车）
-    net_accel = accel - wind_brake
-
-    # 将加速度转换为归一化的油门/刹车值 (0.0-1.0)
-    # 油门: 正加速度映射到 [0, ACCEL_MAX] -> [0, 1.0]
-    # 刹车: 负加速度映射到 [ACCEL_MIN, 0] -> [0, 1.0]
-    if net_accel > 0:
-      gas_value = min(net_accel / self.params.ACCEL_MAX, 1.0)
-      brake_value = 0.0
-    else:
-      gas_value = 0.0
-      brake_value = min(-net_accel / abs(self.params.ACCEL_MIN), 1.0)
-
-    return gas_value, brake_value
-
-  def _apply_gas_brake_hysteresis(self, gas, brake):
-    """对油门和刹车命令应用滞后控制，避免闪烁。
-
-    参数:
-      gas: 原始油门值 (0.0-1.0)
-      brake: 原始刹车值 (0.0-1.0)
-
-    返回:
-      tuple: (gas, brake, braking, gas_steady, brake_steady)
-    """
-    # 刹车滞后逻辑
-    if (brake < CarControllerConstants.GAS_BRAKE_HYST_ON and not self.braking) or \
-       brake < CarControllerConstants.GAS_BRAKE_HYST_OFF:
-      brake = 0.0
-    self.braking = brake > 0.0
-
-    # 刹车稳态控制 - 避免小幅振荡
-    if brake == 0.0:
-      self.brake_steady = 0.0
-    elif brake > self.brake_steady + CarControllerConstants.GAS_BRAKE_HYST_GAP:
-      self.brake_steady = brake - CarControllerConstants.GAS_BRAKE_HYST_GAP
-    elif brake < self.brake_steady - CarControllerConstants.GAS_BRAKE_HYST_GAP:
-      self.brake_steady = brake + CarControllerConstants.GAS_BRAKE_HYST_GAP
-    brake = self.brake_steady
-
-    # 油门滞后逻辑（类似刹车）
-    gas_hyst_on = CarControllerConstants.GAS_BRAKE_HYST_ON
-    gas_hyst_off = CarControllerConstants.GAS_BRAKE_HYST_OFF
-    gas_hyst_gap = CarControllerConstants.GAS_BRAKE_HYST_GAP
-
-    if gas < gas_hyst_on:
-      gas = 0.0
-
-    # 油门稳态控制
-    if gas == 0.0:
-      self.gas_steady = 0.0
-    elif gas > self.gas_steady + gas_hyst_gap:
-      self.gas_steady = gas - gas_hyst_gap
-    elif gas < self.gas_steady - gas_hyst_gap:
-      self.gas_steady = gas + gas_hyst_gap
-    gas = self.gas_steady
-
-    return gas, brake, self.braking, self.gas_steady, self.brake_steady
 
   # 驾驶员干预检查由Safety层(Panda)自动处理:
   # - Safety层会检查gas_pressed_prev，自动阻止纵向控制
@@ -153,20 +58,30 @@ class CarController(CarControllerBase):
       can_sends: CAN消息列表
     """
     # 纵向控制状态判断：
-    # - CC.enabled: ACC开启（踩油门覆盖时仍为True）
-    # - CC.longActive: OP正在控车（踩油门覆盖时为False）
-    # - CC.cruiseControl.override: 踩油门覆盖中（enabled=True但longActive=False）
-    #
-    # 关键：踩油门覆盖时（override=True），仍需发送ACC_CMD，只是accel=0
+    # - long_active=True: OP 真正控纵向 → 发自算加速度
+    # - gas_override=True: 踩油门覆盖中(框架 gasPressed→gasPressedOverride→longActive=False,
+    #   但 CC.enabled 仍True/ACC没退出) → 仍发OP自己的ACC_CMD, 只是accel强制0/不刹车,
+    #   不透传原车摄像头当时的实时值(2026-08-26改: 之前这里透传cam_msg, 但原车摄像头此刻的
+    #   CMD字段是它自己独立算出来的瞬时值——踩油门那一刻如果它正好在算减速, 透传等于一边
+    #   给油一边发刹车指令给车, 疑似这个冲突触发过原车故障。参考同仓库toyota/honda/gm/vw/
+    #   hyundai_canfd, 没有一家在override时透传外部单元的实时值, 全部是"永远发自己的消息,
+    #   override时accel=0/不刹车", 改成一致做法。)
+    # - 两者都不是(ACC本身没开/CC.enabled=False): 透传原车ACC_CMD, 维持消息连续性——这个
+    #   场景OP完全没有意图, 让原车摄像头数据流过去没有冲突风险.
     long_active = self.CP.openpilotLongitudinalControl and CC.longActive
-    gas_override = self.CP.openpilotLongitudinalControl and CC.enabled and CS.out.gasPressed and not CC.longActive
+    # A physical brake also clears longActive. Do not mistake that disengage
+    # edge for an accelerator override and inject ACC_REQ=0 into the factory
+    # ACC stream; only a real gas press is an override.
+    gas_override = (self.CP.openpilotLongitudinalControl and CC.enabled and
+                    not CC.longActive and CS.out.gasPressed)
 
-    if long_active:
+    if long_active or gas_override:
       # 控车时：计算加速度命令
       accel = CC.actuators.accel
 
-      # 用户踩油门时accel=0，让用户控制
-      if CS.out.gasPressed:
+      # 踩油门override时强制accel=0(不依赖CS.out.gasPressed这一帧是否恰好为True——
+      # gas_override本身已经是"OP没有真正控纵向"的判据)
+      if gas_override or CS.out.gasPressed:
         accel = 0.0  # 停止发送加速度命令，让用户自由控制
 
       # 跟车距离由 OP personality 系统控制 (selfdrived.py)
@@ -177,58 +92,36 @@ class CarController(CarControllerBase):
                         CarControllerConstants.ACCEL_WINDDOWN_LIMIT,
                         CarControllerConstants.ACCEL_WINDUP_LIMIT)
       self.last_accel = accel
-
-      # 计算油门和刹车值
-      gas_value, brake_value = self._compute_gas_brake(accel, CS.out.vEgo)
-
-      # 应用滞后控制
-      gas_value, brake_value, _, _, _ = self._apply_gas_brake_hysteresis(gas_value, brake_value)
-
-      # 设置使能标志
-      # 关键修复：用户踩油门时禁用刹车，避免油门空转（参考GM at_full_stop逻辑）
-      gas_enabled = gas_value > 0
-      brake_enabled = brake_value > 0 and not CS.out.gasPressed
     else:
-      # 不控车时：发送零值 (参考Honda L236-238)
+      # ACC本身没开：发送零值 (参考Honda L236-238)
       accel = 0.0
-      gas_value = 0.0
-      brake_value = 0.0
-      gas_enabled = False
-      brake_enabled = False
 
     # 纵向控制消息发送逻辑（和SP一致）：
-    # - 只要开启了纵向控制，就始终发送ACC_CMD
-    # - 不控车时：使用原车摄像头数据（long_active=False）
-    # - 控车时：修改加速度等字段（long_active=True）
-    # 这样openpilot代替原车摄像头发送消息，保持消息连续性
+    # - 只要开启了纵向控制，就始终发送ACC_CMD(保持消息连续性)
+    # - long_active=True: 改写加速度等字段, 交给原车ACC自己的加减速回路执行(和人开车用原厂ACC同一条路径)
+    # - gas_override=True: 也发OP自己的字段, 但accel已强制0(见上), 不透传原车摄像头实时值
+    # - 都不是(ACC没开): 透传原车摄像头ACC_CMD
+    # 注: 之前这里还并行发过GAS_COMMAND(0x200)/TORQUE_COMMAND(0x202)拦截器命令,
+    #     实车CAN抓包(6份日志/合计约3000万帧, 含ACC_CMD/BRAKE等高频原生信号)里
+    #     0x200/0x202从未出现过一次 —— 车上没有对应硬件, 那两条是死信号, 而且
+    #     跟这里的ACC_CMD同时改车速会两套系统抢刹车/油门, 已删除.
     should_send_acc = self.CP.openpilotLongitudinalControl
+
+    # 2026-08-28: 是否处于"驾驶员用油门覆盖纵向"的状态——不止gas_override(基于longActive),
+    # CS.out.gasPressed单独也算(跟上面"if gas_override or CS.out.gasPressed: accel=0.0"
+    # 用的是同一个判据), 传给create_acc_command好让ACC_REQ也跟着一起撤回。
+    is_override = gas_override or CS.out.gasPressed
 
     if should_send_acc:
       can_sends.append(create_acc_command(
         self.packer,
-        accel,                           # 控车时是计算值，覆盖时是0
-        long_active or gas_override,     # 控车标志（覆盖时也算控车）
-        CS.cam_acc_msg,                  # 原车摄像头数据
+        accel,                           # long_active/gas_override时是计算值(override已强制0)
+        long_active or gas_override,     # True=发OP自己字段, False=透传原车(ACC未开)
+        CS.cam_acc_msg,                  # 原车摄像头数据(仅ACC未开时用作透传源)
         self.counter,                    # 计数器
-        gas_override,                    # 油门覆盖标志
-        CS.out.standstill                # 车辆静止标志
+        CS.out.standstill,               # 车辆静止标志
+        is_override                      # 驾驶员油门覆盖中: ACC_REQ也要归0(实测原厂行为)
       ))
-
-      # 发送直接执行器控制命令（只在真正控车时，覆盖时不发）
-      if long_active:
-        can_sends.append(create_gas_command(
-          self.packer,
-          gas_value,
-          gas_enabled,
-          self.frame % 16
-        ))
-
-        can_sends.append(create_torque_command(
-          self.packer,
-          brake_value,
-          brake_enabled,
-          self.frame % 16
-        ))
 
   def update(self, CC, CC_SP, CS, now_nanos):  # xiaomi8: upstream added CC_SP
     """生成车辆控制的CAN消息。
@@ -241,13 +134,16 @@ class CarController(CarControllerBase):
     返回:
       tuple: (new_actuators, can_sends) - 更新后的执行器和CAN消息
     """
+    # 更新MADS状态(HUD图标用, 当前未接入HUD消息)
+    MadsCarController.update(self, self.CP, CC, CC_SP, self.frame)
+
     can_sends = []
     actuators = CC.actuators
 
     # === 转向控制 ===
     # 横向控制激活状态
-    # 注释掉驾驶员扭矩过大退出控制的逻辑，允许大幅度转动
-    steer_enabled = CC.latActive  # and abs(CS.out.steeringTorque) < CarControllerConstants.MAX_DRIVER_TORQUE_ALLOWANCE
+    # 驾驶员扭矩过大不退出控制，允许大幅度转动
+    steer_enabled = CC.latActive
     new_steer = int(round(actuators.torque * self.params.STEER_MAX))
 
     # 打灯变道处理：移除转向力度降低

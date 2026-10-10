@@ -119,7 +119,7 @@ class CarState(CarStateBase):
     # xiaomi8: upstream removed CarState.gas (float); only gasPressed (bool) remains
     gas_pedal = cp.vl["GAS_PEDAL"]["APPS_1"]
     ret.gasPressed = min(gas_pedal, 1.0) > CarStateConstants.GAS_PEDAL_THRESHOLD
-    ret.brake = cp.vl["BRAKE"]["BRAKE_PRESSURE"] / 100.0  # 归一化到[0.0-1.0]
+    # xiaomi8 fix: upstream 删除了 CarState.brake (float), 只剩 brakePressed (bool), 见下
     ret.brakePressed = bool(cp.vl["PARKING_BRAKE"]["BRAKE_PRESSED"])
     ret.brakeHoldActive = bool(cp.vl["PARKING_BRAKE"]["CAR_ON_HOLD"])
     ret.parkingBrake = bool(cp.vl["PARKING_BRAKE"]["ENGAGING_TILL_RELEASE"])

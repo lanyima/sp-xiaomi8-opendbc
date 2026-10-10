@@ -1,5 +1,4 @@
 """吉利CAN消息创建工具。"""
-from opendbc.car import structs
 
 # CRC8校验和计算（多项式0x2F，初始化0xFF，异或输出0xFF）
 _CRC8_POLY = 0x2F
@@ -110,20 +109,27 @@ def create_can_steer_command(packer, steer, steer_req, cam_msg: dict, counter: i
   return _make_can_msg_with_checksum(packer, "ADAS_LKAS", values)
 
 
-def create_acc_command(packer, accel, long_active, cam_msg: dict, counter: int, gas_override: bool, standstill: bool):
+def create_acc_command(packer, accel, own_fields, cam_msg: dict, counter: int, standstill: bool, is_override: bool = False):
   """创建ACC_CMD纵向控制消息。
 
   核心逻辑：
-  - 不控车时：完整转发原车摄像头数据（COUNTER除外）
-  - 控车时：修改加速度、ACC请求、运动模式、静止和油门覆盖标志等关键字段
+  - own_fields=True(真控车 或 踩油门override中): 发OP自己合成的字段(不是原车摄像头的实时值)。
+    调用方(carcontroller.py)在gas_override时已经把accel强制为0, 这里CMD/OFFSET系列自然
+    算出0物理值、BRAKE_ENGAGED恒为0, 等价于"发自己的ACC_CMD, 加速度0, 不刹车"——不透传原车
+    摄像头当时的实时值(★2026-08-26改: 之前override时直接透传cam_msg, 但摄像头那一刻的CMD
+    是它自己独立算的瞬时值, 踩油门那一刻如果它正好在算减速, 透传就是一边给油门一边给车发
+    刹车指令, 疑似这个冲突触发过原车故障。参考同仓库toyota/honda/gm/vw/hyundai_canfd, 没有
+    一家在override时透传外部单元的实时值, 全部是"永远发自己的消息+override时accel归零",
+    改成一致做法.)
+  - own_fields=False(ACC本身没开): 原样透传原车摄像头 ACC_CMD(仅换COUNTER)，维持消息连续性
+    ——这个场景OP完全没有控制意图，两路数据不会冲突。
 
   参数:
     packer: CANPacker实例
-    accel: 期望加速度（m/s²）
-    long_active: openpilot纵向控制是否激活（布尔值）- 是否正在控车
+    accel: 期望加速度（m/s²）——gas_override时调用方已强制为0
+    own_fields: 是否发OP自己合成的字段（真控车 or 踩油门override中）；False=透传原车
     cam_msg: 包含所有字段的原始摄像头消息字典
     counter: 消息计数器（0-15），由carcontroller管理递增
-    gas_override: 驾驶员踩油门覆盖标志
     standstill: 车辆静止标志
 
   返回:
@@ -157,17 +163,13 @@ def create_acc_command(packer, accel, long_active, cam_msg: dict, counter: int, 
   # 使用传入的counter（由carcontroller管理递增）
   values["COUNTER"] = counter & 0xF
 
-  # 控车时修改所有关键字段
-  if long_active:
-    # 油门覆盖时不发送加速度命令，防止ACC/AEB故障
-    if gas_override:
-      accel_phys = 0  # 油门覆盖时加速度命令为0
-    else:
-      # 加速度命令（DBC定义offset不同，需要调整物理值使raw值一致）
-      #   CMD:         offset=-138
-      #   CMD_OFFSET1: offset=-142 (比CMD小4)
-      #   CMD_OFFSET2: offset=-140 (比CMD小2)
-      accel_phys = accel * 10
+  # 真控车 或 踩油门override中：发OP自己合成的字段(override时accel已被调用方强制为0)
+  if own_fields:
+    # 加速度命令（DBC定义offset不同，需要调整物理值使raw值一致）
+    #   CMD:         offset=-138
+    #   CMD_OFFSET1: offset=-142 (比CMD小4)
+    #   CMD_OFFSET2: offset=-140 (比CMD小2)
+    accel_phys = accel * 10
 
     values.update({
       # 加速度命令
@@ -176,29 +178,29 @@ def create_acc_command(packer, accel, long_active, cam_msg: dict, counter: int, 
       "CMD_OFFSET2": accel_phys - 2,
 
       # ACC请求标志
-      "ACC_REQ": 1,
-      "NOT_ACC_REQ": 0,
+      # 2026-08-28修复: 实测原厂14次真实"踩油门"瞬间(含ACC主开关已打开的情况),
+      # ACC_REQ 无一例外全是0——原厂设计是踩油门就把请求本身撤回(不只是把加速度调成0),
+      # 这样松开油门后ACC_REQ回1、车自己恢复到设定车速。之前这里不管override与否
+      # 都无条件发1, 原车ACC会当成"主动请求维持当前车速"跟驾驶员的油门对着干,
+      # 这正是用户反馈"踩油门有阻力"的根因。现在override时(accel已被上游强制为0)
+      # 跟原厂一样把ACC_REQ也撤回。
+      "ACC_REQ": 0 if is_override else 1,
+      "NOT_ACC_REQ": 1 if is_override else 0,
+      "CRUISE_ENABLE": 1,
 
-      # 巡航使能
-      "CRUISE_ENABLE": 0 if gas_override else 1,
+      # 运动控制模式: 5=保持静止, 3=加速, 4=刹车, 1=维持速度
+      # override时跟原厂非激活态一致用4(配合ACC_REQ=0, 原车根本不会理会这个字段)
+      "MOTION_CONTROL": 4 if is_override else (3 if accel > 0 else 4 if accel < 0 else 1),
 
-      # 运动控制模式
-      # 5=保持静止, 3=加速, 4=刹车, 1=维持速度
-      # 油门覆盖时使用维持模式(1)，避免与驾驶员意图冲突
-      "MOTION_CONTROL": 1 if gas_override else (3 if accel > 0 else 4 if accel < 0 else 1),
-
-      # 油门覆盖标志（关键修复！）
-      # 油门覆盖时设置RISING_ENGAGE=1和STANDSTILL2=1，告诉车机驾驶员正在接管
-      # 这样可以避免车机报ACC/AEB故障
-      "STANDSTILL2": 1 if gas_override else (1 if standstill else 0),
-      "RISING_ENGAGE": 1 if gas_override else 0,
+      "STANDSTILL2": 1 if standstill else 0,
+      "RISING_ENGAGE": 0,
 
       # 固定值
       "SET_ME_X6A": 0x6A,
       "BRAKE_ENGAGED": 0,
       "SET_ME_1": 1,
     })
-  # 不控车时：完全使用原车摄像头的字段值原样转发（COUNTER除外）
+  # own_fields=False(ACC本身没开): 原样透传原车摄像头ACC_CMD(仅换COUNTER), 维持消息连续性
 
   # 重新计算 CHECKSUM（COUNTER变化后需要重新计算）
   return _make_can_msg_with_checksum(packer, "ACC_CMD", values)
@@ -230,87 +232,3 @@ def create_acc_command(packer, accel, long_active, cam_msg: dict, counter: int, 
 #
 #   # 重新计算 CHECKSUM
 #   return _make_can_msg_with_checksum(packer, "PCM_BUTTONS", values)
-
-
-def compute_set_distance(distance_button):
-  """计算ACC的设置距离（1-4档）。
-
-  参数:
-    distance_button: 距离按钮按下类型
-
-  返回:
-    int: 距离等级（0-3）
-  """
-  if distance_button == structs.CarState.ButtonEvent.Type.gapAdjustCruise:
-    return 1
-  return 0
-
-
-def create_actuator_command(packer, value, enabled, counter, is_gas=True):
-  """创建执行器控制消息（油门或刹车）。
-
-  参数:
-    packer: CANPacker实例
-    value: 控制值 (0.0-1.0)
-    enabled: 是否启用控制
-    counter: 消息计数器
-    is_gas: True为油门控制，False为刹车控制
-
-  返回:
-    CAN消息元组（地址，数据，总线）
-  """
-  # 将控制值转换为16位整数 (0-65535)
-  command = int(value * 65535) if enabled else 0
-
-  if is_gas:
-    values = {
-      "GAS_COMMAND": command,
-      "GAS_COMMAND2": command,  # 使用相同的值
-      "ENABLE": 1 if enabled else 0,
-      "COUNTER_PEDAL": counter & 0xF,
-    }
-    checksum_field = "CHECKSUM_PEDAL"
-    msg_name = "GAS_COMMAND"
-  else:
-    values = {
-      "INTERCEPTOR_MAIN_TORQUE": command,
-      "INTERCEPTOR_SUB_TORQUE": command,  # 使用相同的值
-      "DIRECTION": 0,  # 假设刹车方向为0
-      "ENABLE": 1 if enabled else 0,
-      "COUNTER_STEERING": counter & 0xF,
-    }
-    checksum_field = "CHECKSUM_STEERING"
-    msg_name = "TORQUE_COMMAND"
-
-  # 计算校验和并返回消息
-  return _make_can_msg_with_checksum(packer, msg_name, values, checksum_field)
-
-
-def create_gas_command(packer, gas_value, enabled, counter):
-  """创建GAS_COMMAND油门控制消息。
-
-  参数:
-    packer: CANPacker实例
-    gas_value: 油门值 (0.0-1.0)
-    enabled: 是否启用油门控制
-    counter: 消息计数器
-
-  返回:
-    CAN消息元组（地址，数据，总线）
-  """
-  return create_actuator_command(packer, gas_value, enabled, counter, is_gas=True)
-
-
-def create_torque_command(packer, torque_value, enabled, counter):
-  """创建TORQUE_COMMAND刹车扭矩控制消息。
-
-  参数:
-    packer: CANPacker实例
-    torque_value: 刹车扭矩值 (0.0-1.0)
-    enabled: 是否启用刹车控制
-    counter: 消息计数器
-
-  返回:
-    CAN消息元组（地址，数据，总线）
-  """
-  return create_actuator_command(packer, torque_value, enabled, counter, is_gas=False)

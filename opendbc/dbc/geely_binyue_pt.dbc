@@ -262,3 +262,12 @@ VAL_ 275 GEAR 15 "D" 14 "D" 13 "D" 12 "D" 11 "R" 10 "P" 9 "D" 8 "D" 7 "D" 6 "D" 
 VAL_ 419 SET_DISTANCE 3 "3BAR" 2 "2BAR" 1 "1BAR" ;
 VAL_ 676 MODE 2 "NORMAL" 1 "SPORT" 0 "ECO" ;
 
+
+BO_ 304 ESP_YAW: 8 XXX
+ SG_ YAW_RATE : 39|16@0+ (0.01,-179.73) [-30|30] "deg/s" XXX
+ SG_ COUNTER : 59|4@0+ (1,0) [0|15] "" XXX
+ SG_ UNKNOWN_B0 : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ UNKNOWN_B2 : 23|8@0+ (1,0) [0|255] "" XXX
+ SG_ UNKNOWN_B3 : 31|8@0+ (1,0) [0|255] "" XXX
+CM_ BO_ 304 "0x130 ESP偏航率, bus0 50Hz. 逆向2026-07-21: 雷达g1.b5横向速度反推偏航率扫车身总线发现, r=-0.99";
+CM_ SG_ 304 YAW_RATE "零点raw=17973. 与雷达FRS(0x080)Host_Yaw回归斜率1.00(r=0.997); vs方向盘0x0e0 r=+0.70~0.81";
