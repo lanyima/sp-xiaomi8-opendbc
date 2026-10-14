@@ -25,6 +25,6 @@ jobs:
           title: "[bot] Update uv.lock"
           body: "Weekly update of uv.lock dependencies"
           branch: "update-uv-lock"
-          base: "master"
+          base: "xiaomi8-port-latest"
           delete-branch: true
           labels: bot

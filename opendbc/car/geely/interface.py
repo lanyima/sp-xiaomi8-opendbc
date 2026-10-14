@@ -6,7 +6,16 @@ from opendbc.car.geely.carcontroller import CarController
 from opendbc.car.geely.radar_interface import RadarInterface
 from opendbc.car.geely.values import CAR, DBC, CarControllerParams, GeelyFlags
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
-from openpilot.common.params import Params
+try:
+  # 运行在完整 openpilot 树时读取用户的 MADS 偏好。
+  from openpilot.common.params import Params
+except ModuleNotFoundError:
+  class Params:  # type: ignore[no-redef]
+    """独立 opendbc 工具（文档/测试）不依赖 openpilot 的最小替代。"""
+
+    @staticmethod
+    def get_bool(_key: str) -> bool:
+      return False
 
 
 class CarInterface(CarInterfaceBase):
